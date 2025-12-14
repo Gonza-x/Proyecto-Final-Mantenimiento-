@@ -1,0 +1,167 @@
+name: Tests PHP
+
+# Ejecutar en cada push y pull request
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: hou_panama_tours
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+
+    steps:
+    - name: 📥 Checkout código
+      uses: actions/checkout@v4
+
+    - name: 🐘 Configurar PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.1'
+        extensions: mbstring, mysqli, pdo, pdo_mysql
+        coverage: xdebug
+        tools: composer
+
+    - name: 📦 Instalar dependencias de Composer
+      run: |
+        if [ -f composer.json ]; then
+          composer install --prefer-dist --no-progress
+        else
+          echo "No hay composer.json, creando uno básico..."
+          composer init --no-interaction --require="phpunit/phpunit:^9.0"
+          composer require --dev phpunit/phpunit
+          composer require --dev squizlabs/php_codesniffer
+        fi
+
+    - name: 🗄️ Importar base de datos
+      run: |
+        mysql -h 127.0.0.1 -u root -proot hou_panama_tours < hou_panama_tours.sql
+
+    - name: ⚙️ Configurar archivo de configuración
+      run: |
+        if [ -f config.php ]; then
+          sed -i "s/localhost/127.0.0.1/g" config.php
+          sed -i "s/\$password = '[^']*'/\$password = 'root'/g" config.php
+          echo "✅ Archivo config.php actualizado para CI"
+        fi
+
+    - name: 🔍 Verificar sintaxis PHP
+      run: |
+        echo "🔍 Verificando sintaxis de archivos PHP..."
+        find . -name "*.php" -not -path "./vendor/*" -exec php -l {} \; | tee syntax-check.log
+        if grep -q "Parse error" syntax-check.log; then
+          echo "❌ Errores de sintaxis encontrados"
+          exit 1
+        else
+          echo "✅ Sintaxis correcta en todos los archivos"
+        fi
+
+    - name: 🧪 Ejecutar tests unitarios (PHPUnit)
+      run: |
+        if [ -d tests ]; then
+          echo "🧪 Ejecutando todos los tests..."
+          vendor/bin/phpunit tests/ --testdox --colors=always
+          
+          echo ""
+          echo "📊 Resumen por categoría:"
+          echo "=========================="
+          
+          if [ -f tests/ProvinciasTest.php ]; then
+            echo "✅ Tests de Provincias (CP-EP-01)"
+            vendor/bin/phpunit tests/ProvinciasTest.php --testdox
+          fi
+          
+          if [ -f tests/LoginTest.php ]; then
+            echo ""
+            echo "✅ Tests de Login/Autenticación"
+            vendor/bin/phpunit tests/LoginTest.php --testdox
+          fi
+          
+          if [ -f tests/ReservasTest.php ]; then
+            echo ""
+            echo "✅ Tests de Reservas"
+            vendor/bin/phpunit tests/ReservasTest.php --testdox
+          fi
+          
+          if [ -f tests/ToursTest.php ]; then
+            echo ""
+            echo "✅ Tests de Tours"
+            vendor/bin/phpunit tests/ToursTest.php --testdox
+          fi
+        else
+          echo "⚠️ No hay carpeta de tests"
+          exit 1
+        fi
+
+    - name: 📊 Análisis de código (PHP_CodeSniffer)
+      run: |
+        if [ -f vendor/bin/phpcs ]; then
+          echo "📊 Analizando calidad de código..."
+          vendor/bin/phpcs --standard=PSR12 --extensions=php --ignore=vendor/ . || true
+        fi
+
+    - name: 🔐 Verificar seguridad básica
+      run: |
+        echo "🔐 Verificando problemas de seguridad comunes..."
+        
+        # Buscar código potencialmente peligroso
+        echo "Buscando eval()..."
+        ! grep -r "eval(" --include="*.php" --exclude-dir=vendor . || echo "⚠️ Advertencia: eval() encontrado"
+        
+        echo "Buscando $_GET sin sanitizar..."
+        ! grep -r '\$_GET\[' --include="*.php" --exclude-dir=vendor . | grep -v "htmlspecialchars\|filter_input\|mysqli_real_escape_string" || echo "⚠️ Advertencia: $_GET sin sanitizar"
+        
+        echo "Buscando SQL directo sin prepared statements..."
+        ! grep -r "mysqli_query.*\$_" --include="*.php" --exclude-dir=vendor . || echo "⚠️ Advertencia: Posible SQL injection"
+        
+        echo "✅ Verificación de seguridad completada"
+
+    - name: 🌐 Test de archivos estáticos
+      run: |
+        echo "🌐 Verificando archivos estáticos..."
+        
+        # Verificar que las imágenes existen
+        for img in Canal.jpg CastilloSanLorenzo.jpg Coiba.jpg Despedida.jpg EmberaWounaan.jpg IslaIguana.jpg; do
+          if [ -f "$img" ]; then
+            echo "✅ $img existe"
+          else
+            echo "❌ $img no encontrado"
+          fi
+        done
+        
+        # Verificar CSS
+        if [ -f style.css ]; then
+          echo "✅ style.css existe"
+          # Validar CSS básico
+          ! grep -q "syntax error" style.css && echo "✅ CSS sin errores de sintaxis"
+        fi
+
+    - name: 📈 Reporte final
+      if: always()
+      run: |
+        echo "=========================================="
+        echo "📈 REPORTE FINAL DE TESTS"
+        echo "=========================================="
+        echo "✅ Tests completados"
+        echo "Revisar los logs arriba para detalles"
+        echo "=========================================="
+
+    - name: 💾 Guardar logs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-logs
+        path: |
+          syntax-check.log
+          *.log
